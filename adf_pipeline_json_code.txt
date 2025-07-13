@@ -1,0 +1,189 @@
+{
+    "name": "pl_incrementload",
+    "properties": {
+        "activities": [
+            {
+                "name": "GetWatermark",
+                "type": "Lookup",
+                "dependsOn": [],
+                "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 3,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "source": {
+                        "type": "AzureSqlSource",
+                        "sqlReaderQuery": "SELECT LastModified FROM WatermarkTable WHERE TableName = 'SourceData'\n",
+                        "queryTimeout": "02:00:00",
+                        "partitionOption": "None"
+                    },
+                    "dataset": {
+                        "referenceName": "DS_WatermarkTable",
+                        "type": "DatasetReference"
+                    }
+                }
+            },
+            {
+                "name": "CopyIncrementals",
+                "type": "Copy",
+                "dependsOn": [
+                    {
+                        "activity": "TruncateStaging",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "source": {
+                        "type": "AzureSqlSource",
+                        "sqlReaderQuery": {
+                            "value": "SELECT ID, Name, Department, LastModifiedDate\nFROM SourceData\nWHERE LastModifiedDate > '@{activity('GetWatermark').output.firstRow.LastModified}'\n",
+                            "type": "Expression"
+                        },
+                        "queryTimeout": "02:00:00",
+                        "partitionOption": "None"
+                    },
+                    "sink": {
+                        "type": "AzureSqlSink",
+                        "writeBehavior": "insert",
+                        "sqlWriterUseTableLock": false
+                    },
+                    "enableStaging": false,
+                    "translator": {
+                        "type": "TabularTranslator",
+                        "typeConversion": true,
+                        "typeConversionSettings": {
+                            "allowDataTruncation": true,
+                            "treatBooleanAsNumber": false
+                        }
+                    }
+                },
+                "inputs": [
+                    {
+                        "referenceName": "DS_SourceData",
+                        "type": "DatasetReference"
+                    }
+                ],
+                "outputs": [
+                    {
+                        "referenceName": "DS_StagingData",
+                        "type": "DatasetReference"
+                    }
+                ]
+            },
+            {
+                "name": "TruncateStaging",
+                "type": "Script",
+                "dependsOn": [
+                    {
+                        "activity": "GetWatermark",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "linkedServiceName": {
+                    "referenceName": "ls_source",
+                    "type": "LinkedServiceReference"
+                },
+                "typeProperties": {
+                    "scripts": [
+                        {
+                            "type": "Query",
+                            "text": "TRUNCATE TABLE StagingData;\n"
+                        }
+                    ],
+                    "scriptBlockExecutionTimeout": "02:00:00"
+                }
+            },
+            {
+                "name": "UpsertFinalData",
+                "type": "Script",
+                "dependsOn": [
+                    {
+                        "activity": "CopyIncrementals",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "linkedServiceName": {
+                    "referenceName": "ls_source",
+                    "type": "LinkedServiceReference"
+                },
+                "typeProperties": {
+                    "scripts": [
+                        {
+                            "type": "Query",
+                            "text": "MERGE FinalData AS TARGET USING StagingData AS SOURCE ON TARGET.ID = SOURCE.ID WHEN MATCHED THEN     UPDATE SET         Name = SOURCE.Name,         Department = SOURCE.Department,         LastModifiedDate = SOURCE.LastModifiedDate WHEN NOT MATCHED BY TARGET THEN     INSERT (ID, Name, Department, LastModifiedDate)     VALUES (SOURCE.ID, SOURCE.Name, SOURCE.Department, SOURCE.LastModifiedDate);"
+                        }
+                    ],
+                    "scriptBlockExecutionTimeout": "02:00:00"
+                }
+            },
+            {
+                "name": "UpdateWatermark",
+                "type": "Script",
+                "dependsOn": [
+                    {
+                        "activity": "UpsertFinalData",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "linkedServiceName": {
+                    "referenceName": "ls_source",
+                    "type": "LinkedServiceReference"
+                },
+                "typeProperties": {
+                    "scripts": [
+                        {
+                            "type": "Query",
+                            "text": "UPDATE WatermarkTable SET LastModified = (SELECT MAX(LastModifiedDate) FROM SourceData) WHERE TableName = 'SourceData';"
+                        }
+                    ],
+                    "scriptBlockExecutionTimeout": "02:00:00"
+                }
+            }
+        ],
+        "annotations": []
+    }
+}
